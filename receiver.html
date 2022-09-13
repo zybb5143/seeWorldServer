@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+
+<body>
+    <div id="mobileDisplayer"></div>
+    <div style="height:720px ; width:1280px ; background-color:rgb(71, 71, 71)">
+        <video id="remoteVideoStreamView" autoplay muted></video>
+    </div>
+    <button disabled id="stopStreamingButton" onclick="connectionCtrl.stopStreaming()">stop streaming</button>
+</body>
+<script>
+    var currentConnectingID=null;
+    var connectURL = "ws://82.156.42.126:1245/receiver/connect";
+    var remoteView = document.getElementById("remoteVideoStreamView");
+    var mediaConfiguration = {
+        "OfferToReceiveAudio": false,
+        "OfferToReceiveVideo": true
+    };
+    var iceConfiguration = {
+        "iceServers": [{ urls: "turn:82.156.42.126:3478", username: "user", credential: "123" }],
+        "bundlePolicy": 'max-bundle',
+        "configuration": mediaConfiguration
+    };
+    var stopStreamingBtn = document.getElementById("stopStreamingButton");
+    class ConnectionController {
+        socket = null;
+        peerconnection = null;
+        sendMessage(data) {
+            console.log("send to server: ", data);
+            /* this.socket.send(unescape(encodeURIComponent(JSON.stringify(data)))); */
+            this.socket.send(JSON.stringify(data));
+        }
+        constructor(connectURL) {
+            this.socket = new WebSocket(connectURL);
+            console.log("[info] trying to connect with server");
+            this.socket.onopen = () => {
+                console.log("[info] connected to server");
+            }
+            this.socket.onmessage = (evt) => {
+                // heatbeat mechanism of web socket
+                if (evt.data === '' || evt.data === '\x00\x00\x00\x00') {
+                    return;
+                }
+                console.log('[message] message from server ', evt);
+                /* let msg = JSON.parse(decodeURIComponent(escape(evt.data))); */
+                let msg = JSON.parse(evt.data);
+                console.log(msg.type);
+                switch (msg.type) {
+                    case "offer":
+                        this.peerconnection.setRemoteDescription(new RTCSessionDescription(msg.sdp),
+                            () => { console.log("[info] remote sdp set"); });
+                        this.peerconnection.createAnswer((answer) => {
+                            this.peerconnection.setLocalDescription(answer).then(() => {
+                                console.log("[info] local answer set")
+                            });
+                        }, () => { }, mediaConfiguration);
+                        break;
+                    case "mobile_states":
+                        {
+                            let displayer = document.getElementById("mobileDisplayer");
+                            let innerHTMLStr = '<ul style="list-style-type:circle">';
+                            msg.mobile_info.forEach((elem) => {
+                                let cur_state="";
+                                switch(elem.state)
+                                {
+                                    case 0:
+                                        cur_state="occupied";
+                                        break;
+                                    case 1:
+                                        cur_state="charing";
+                                        break;
+                                    case 2:
+                                        cur_state="free";
+                                        break;
+                                    case 3:
+                                        cur_state="disconnced";
+                                        break;
+                                }
+                                if(elem.mobile_id==currentConnectingID)
+                                {
+                                    if(elem.state==0 || elem.state==1 || elem.state==3)
+                                    {
+                                        currentConnectingID=null;
+                                        remoteView.style.visibility='hidden';
+                                        stopStreamingBtn.disabled=true;
+                                    }
+                                }
+                                innerHTMLStr += '<li>&nbspid:&nbsp' + elem.mobile_id 
+                                    + '&nbsp' + cur_state + 
+                                    '&nbsp<button onclick="connectionCtrl.establishConnectionSignal(' + elem.mobile_id + ')">connect</button>' + '</li>';
+                            });
+                            innerHTMLStr += '</ul>';
+                            displayer.innerHTML = innerHTMLStr;
+                        }
+                }
+            };
+        }
+        sendControlMessage(instruction_msg) {
+            let jmsg = {
+                "type": "control",
+                "instruction": instruction_msg
+            };
+            this.sendMessage(jsmg);
+        }
+        establishConnectionSignal(mobile_id) {
+            let jmsg = {
+                "type": "establish_connection",
+                "mobile_id": mobile_id
+            };
+            this.sendMessage(jmsg);
+            this.doPeerConnection();
+        }
+        doPeerConnection() {
+            this.peerconnection = new RTCPeerConnection(iceConfiguration);
+            this.peerconnection.onicecandidate = (evt) => {
+                console.log(evt);
+            }
+            this.peerconnection.ontrack = (event) => {
+                console.log("[info] on track");
+                remoteView.srcObject = event.streams[0];
+                remoteView.play();
+                stopStreamingBtn.disabled = false;
+                remoteView.style.visibility='visible';
+            };
+            this.peerconnection.onicegatheringstatechange = (evt) => {
+                console.log("[info] ice gathering state change");
+                if (evt.target.iceGatheringState === 'complete') {
+                    console.log("[info] ice complete ");
+                    this.sendMessage({
+                        type: "answer",
+                        data: this.peerconnection.localDescription
+                    });
+
+                }
+            }
+        }
+        stopStreaming() {
+            stopStreamingBtn.disabled = true;
+            let jmsg = {
+                "type": "close_connection"
+            };
+            currentConnectingID=null;
+            remoteView.style.visibility='hidden';
+            this.sendMessage(jmsg);
+        }
+    }
+    var connectionCtrl = new ConnectionController(connectURL);
+</script>
+
+</html>
